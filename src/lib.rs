@@ -117,10 +117,11 @@ pub fn encode(buf: &[u8]) -> Result<String, errors::Base32768Error> {
 ///
 /// ```
 /// let data = "䩲腻㐿";
-/// let res = base32768::decode(&data).unwrap();
-/// println!("Encoded message: {:?}", res);
+/// let mut decoded = Vec::<u8>::new();
+/// base32768::decode(&data, &mut decoded).unwrap();
+/// println!("Decoded message: {}", String::from_utf8(decoded).unwrap());
 /// ```
-pub fn decode(in_str: &str) -> Result<Box<[u8]>, errors::Base32768Error> {
+pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base32768Error> {
     let mut ks = Vec::<u16>::new();
     let mut last_bytes_bits = 15;
 
@@ -146,16 +147,15 @@ pub fn decode(in_str: &str) -> Result<Box<[u8]>, errors::Base32768Error> {
         }
     };
     let sized_bytes = bits_to_bits::resize_bytes_ex(ks.as_slice(), POINT_LEN, 8, last_bytes_bits);
-    let mut out_buf = Vec::<u8>::with_capacity(sized_bytes.len());
     for idx in 0..sized_bytes.len() {
         if sized_bytes[idx].bits == 8 {
-            out_buf.push(unsafe {
+            out_vec.push(unsafe {
                 mem::transmute::<u16, [u8; 2]>(sized_bytes[idx].bytes)[0]
             });
         }
     }
 
-    Ok(out_buf.into_boxed_slice())
+    Ok(())
 }
 
 
@@ -177,9 +177,10 @@ mod test {
     #[test]
     fn test_decode_hello() {
         let hello = [72u8, 101u8, 108u8, 108u8, 111u8];
-        let res = super::decode("䩲腻㐿").unwrap();
+        let mut decoded = Vec::<u8>::new();
+        super::decode("䩲腻㐿", &mut decoded).unwrap();
 
-        assert_eq!(*res, hello);
+        assert_eq!(decoded.as_slice(), hello);
     }
 
     #[test]
@@ -204,11 +205,12 @@ mod test {
                 let out = res.unwrap();
                 assert_eq!(out, test_string);
 
-                let decoded = super::decode(&out);
-                if let Err(e) = decoded {
+                let mut decoded = Vec::<u8>::new();
+                let res = super::decode(&out, &mut decoded);
+                if let Err(e) = res {
                     panic!("Got error {} trying to decode from file {}", e.description(), path_str);
                 }
-                assert_eq!(&*decoded.unwrap(), bin_vec.as_slice());
+                assert_eq!(decoded.as_slice(), bin_vec.as_slice());
             }
         }
     }
