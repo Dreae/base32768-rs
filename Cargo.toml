@@ -2,6 +2,12 @@
 name = "base32768"
 version = "0.1.0"
 authors = ["Dreae <dreae@dreae.onl>"]
+description = "Encodes binary data to UTF-16 text"
+homepage = "https://github.com/Dreae/base32768-rs"
+repository = "https://github.com/Dreae/base32768-rs"
+readme = "README.md"
+license = "MIT"
+categories = ["encoding"]
 
 [dependencies]
 lazy_static = "0.2.8"
