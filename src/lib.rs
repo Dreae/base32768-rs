@@ -1,9 +1,6 @@
-#![feature(io)]
-
 #[macro_use]
 extern crate lazy_static;
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::mem;
 
@@ -14,18 +11,41 @@ mod bits_to_bits;
 static POINT_LEN: usize = 15;
 
 struct LookupTables {
-    lookup_encode: HashMap<usize, HashMap<u16, u16>>,
-    lookup_decode: HashMap<usize, HashMap<u16, u16>>,
+    lookup_encode: Vec<Box<[u16]>>,
+    lookup_decode: Vec<Box<[u16]>>,
 }
 
+macro_rules! gen_repertoires {
+    ($n:expr, $e:ident, $d:ident) => {
+        let rep_encode_len = $n.len() * (data::BLOCK_SIZE as usize);
+        let rep_decode_len = calc_max_size($n);
+        let mut encode_rep = Vec::with_capacity(rep_encode_len);
+        let mut decode_rep = Vec::with_capacity(rep_decode_len);
+        encode_rep.resize(rep_encode_len, 0u16);
+        decode_rep.resize(rep_decode_len, std::u16::MAX);
+
+        build_repertoire($n, &mut encode_rep, &mut decode_rep);
+        $e.push(encode_rep.into_boxed_slice());
+        $d.push(decode_rep.into_boxed_slice());
+    }
+}
+
+// TODO: Generate these tables at compile time
 lazy_static! {
     static ref LOOKUP_TABLES: LookupTables = {
-        let mut encode = HashMap::new();
-        let mut decode = HashMap::new();
-        
-        fn build_repertoire(start_chars: &str) -> (HashMap<u16, u16>, HashMap<u16, u16>) {
-            let mut encode = HashMap::new();
-            let mut decode = HashMap::new();
+        let mut encode_table = Vec::new();
+        let mut decode_table = Vec::new();
+
+        #[inline(always)]
+        fn calc_max_size(block_start: &str) -> usize {
+            let max_char = block_start.chars().max().unwrap();
+            let mut b = [0u16; 1];
+            max_char.encode_utf16(&mut b);
+
+            (b[0] as usize) * (data::BLOCK_SIZE as usize)
+        }
+
+        fn build_repertoire(start_chars: &str, encode: &mut Vec<u16>, decode: &mut Vec<u16>) {
             let mut i = 0;
             for c in start_chars.chars() {
                 if c.len_utf16() != 1 {
@@ -40,27 +60,20 @@ lazy_static! {
                 for offset in 0..data::BLOCK_SIZE {
                     let code_point = block_start_codepoint + offset;
                     let k = block_start_k + offset;
-                    encode.insert(k, code_point);
-                    decode.insert(code_point, k);
+                    encode[k as usize] = code_point;
+                    decode[code_point as usize] = k;
                 }
 
                 i += 1;
             }
-
-            (encode, decode)
         }
 
-        let (block_0_encode, block_0_decode) = build_repertoire(data::BLOCK_START_0);
-        encode.insert(0, block_0_encode);
-        decode.insert(0, block_0_decode);
-
-        let (block_1_encode, block_1_decode) = build_repertoire(data::BLOCK_START_1);
-        encode.insert(1, block_1_encode);
-        decode.insert(1, block_1_decode);
+        gen_repertoires!(data::BLOCK_START_0, encode_table, decode_table);
+        gen_repertoires!(data::BLOCK_START_1, encode_table, decode_table);
 
         LookupTables{
-            lookup_encode: encode,
-            lookup_decode: decode,
+            lookup_encode: encode_table,
+            lookup_decode: decode_table,
         }
     };
 }
@@ -92,11 +105,11 @@ pub fn encode(buf: &[u8]) -> Result<String, errors::Base32768Error> {
         }
 
         let repertoire = (POINT_LEN - bits) / 8;
-        let encode_table = LOOKUP_TABLES.lookup_encode.get(&repertoire);
+        let encode_table = LOOKUP_TABLES.lookup_encode.get(repertoire);
         if let None = encode_table {
             return Err(errors::Base32768Error::new(format!("Unrecognized `repertoire` {}", repertoire)));
         }
-        let code_point = encode_table.unwrap().get(&bytes);
+        let code_point = encode_table.unwrap().get(bytes as usize);
         if let None = code_point {
             return Err(errors::Base32768Error::new(format!("Can't encode {}", bytes)));
         }
@@ -133,16 +146,18 @@ pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base327
         let mut b = [0; 1];
         c.encode_utf16(&mut b);
 
-        for key in LOOKUP_TABLES.lookup_decode.keys() {
-            if let Some(k) = LOOKUP_TABLES.lookup_decode.get(key).unwrap().get(&b[0]) {
-                if *key != 0 {
-                    if byte_offset != in_str.len() - 2 {
-                        return Err(errors::Base32768Error::new("Got padding character in the middle of the stream".to_owned()));
-                    } else {
-                        last_bytes_bits = POINT_LEN - 8 * (*key);
+        for key in 0..LOOKUP_TABLES.lookup_decode.len() {
+            if let Some(k) = LOOKUP_TABLES.lookup_decode[key].get(b[0] as usize) {
+                if *k != std::u16::MAX {
+                    if key != 0 {
+                        if byte_offset != in_str.len() - 2 {
+                            return Err(errors::Base32768Error::new("Got padding character in the middle of the stream".to_owned()));
+                        } else {
+                            last_bytes_bits = POINT_LEN - 8 * key;
+                        }
                     }
+                    ks.push(*k);
                 }
-                ks.push(*k);
             }
         }
     };
@@ -156,62 +171,4 @@ pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base327
     }
 
     Ok(())
-}
-
-
-#[cfg(test)]
-mod test {
-    extern crate glob;
-
-    use std::fs::File;
-    use std::path::Path;
-    use std::io::Read;
-    use std::error::Error;
-
-    #[test]
-    fn test_encode_hello() {
-        let res = super::encode(&[72u8, 101u8, 108u8, 108u8, 111u8]);
-        assert_eq!(res.unwrap(), "䩲腻㐿");
-    }
-
-    #[test]
-    fn test_decode_hello() {
-        let hello = [72u8, 101u8, 108u8, 108u8, 111u8];
-        let mut decoded = Vec::<u8>::new();
-        super::decode("䩲腻㐿", &mut decoded).unwrap();
-
-        assert_eq!(decoded.as_slice(), hello);
-    }
-
-    #[test]
-    fn run_encode_decode_test_suite() {
-        let src_dir = Path::new(file!()).parent().unwrap().to_str().unwrap();
-        for entry in glob::glob(&format!("{}/test/**/*.bin", src_dir)).expect("Failed to glob test directory") {
-            if let Ok(path) = entry {
-                let path_str = path.into_os_string().into_string().unwrap();
-                let mut bin_file = File::open(path_str.clone()).unwrap();
-                let txt_file = File::open(path_str.replace(".bin", ".txt")).unwrap();
-
-                let mut bin_vec = Vec::<u8>::new();
-
-                bin_file.read_to_end(&mut bin_vec).unwrap();
-                // TODO: Remove unstable feature requirement
-                let test_string: String = txt_file.chars().map(|c| c.unwrap()).collect();
-
-                let res = super::encode(&bin_vec);
-                if let Err(e) = res {
-                    panic!("Got error {} trying to encode from file {}", e.description(), path_str);
-                }
-                let out = res.unwrap();
-                assert_eq!(out, test_string);
-
-                let mut decoded = Vec::<u8>::new();
-                let res = super::decode(&out, &mut decoded);
-                if let Err(e) = res {
-                    panic!("Got error {} trying to decode from file {}", e.description(), path_str);
-                }
-                assert_eq!(decoded.as_slice(), bin_vec.as_slice());
-            }
-        }
-    }
 }
