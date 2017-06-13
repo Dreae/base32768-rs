@@ -10,7 +10,12 @@ use std::error::Error;
 #[test]
 fn test_encode_hello() {
     let res = base32768::encode(&[72u8, 101u8, 108u8, 108u8, 111u8]);
-    assert_eq!(res.unwrap(), "䩲腻㐿");
+    assert_eq!(res, "䩲腻㐿");
+}
+
+#[test]
+fn test_encode_string() {
+    let res = base32768::encode("The quick brown fox jumps over the lazy dog".as_bytes());
 }
 
 #[test]
@@ -37,11 +42,7 @@ fn run_encode_decode_test_suite() {
             // TODO: Remove unstable feature requirement
             let test_string: String = txt_file.chars().map(|c| c.unwrap()).collect();
 
-            let res = base32768::encode(&bin_vec);
-            if let Err(e) = res {
-                panic!("Got error {} trying to encode from file {}", e.description(), path_str);
-            }
-            let out = res.unwrap();
+            let out = base32768::encode(&bin_vec);
             assert_eq!(out, test_string);
 
             let mut decoded = Vec::<u8>::new();

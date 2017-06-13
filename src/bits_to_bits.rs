@@ -44,15 +44,11 @@ pub fn resize_bytes_ex<T>(in_buf: &[T], byte_size: usize, size: usize, last_byte
   resized_bytes.into_boxed_slice()
 }
 
-pub fn resize_bytes<T>(in_buf: &[T], byte_size: usize, size: usize) -> Box<[ResizedByte]> where T: Into<u16> + Copy {
-  resize_bytes_ex(in_buf, byte_size, size, byte_size)
-}
-
 #[cfg(test)]
 mod test {
   #[test]
   fn resize_odd_bytes_correctly() {
-    let bytes = super::resize_bytes(&[4u8, 244u8, 13u8, 12u8, 92u8], 8, 15);
+    let bytes = super::resize_bytes_ex(&[4u8, 244u8, 13u8, 12u8, 92u8], 8, 15, 8);
     let correct_bytes = vec![
       super::ResizedByte {
         bytes: 634,
@@ -78,7 +74,7 @@ mod test {
 
   #[test]
   fn resize_even_bytes_correctly() {
-    let bytes = super::resize_bytes(&[242u8, 67u8, 167u8, 208u8, 253u8, 91u8, 156u8, 21u8], 8, 15);
+    let bytes = super::resize_bytes_ex(&[242u8, 67u8, 167u8, 208u8, 253u8, 91u8, 156u8, 21u8], 8, 15, 8);
     let correct_bytes = vec![
       super::ResizedByte {
         bytes: 31009,

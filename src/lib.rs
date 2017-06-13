@@ -1,7 +1,9 @@
 #[macro_use]
 extern crate lazy_static;
+extern crate byteorder;
 
-use std::error::Error;
+use byteorder::{BigEndian, ByteOrder};
+
 use std::mem;
 
 mod data;
@@ -78,6 +80,21 @@ lazy_static! {
     };
 }
 
+#[inline]
+fn calculate_encoded_length(byte_len: usize) -> Option<usize> {
+    let bit_len = byte_len.checked_mul(8);
+    let char_len = bit_len.and_then(|b| { b.checked_div(15) });
+    let rem = bit_len.and_then(|b| { b.checked_rem(15) });
+
+    rem.and_then(|r| {
+        if r != 0 {
+            char_len.and_then(|l| { l.checked_add(1) })
+        } else {
+            char_len
+        }
+    })
+}
+
 /// Encodes a slice of binary data into a UTF String
 /// # Examples
 ///
@@ -86,43 +103,54 @@ lazy_static! {
 /// let encoded = base32768::encode(&data).unwrap();
 /// println!("Encoded message: {}", encoded);
 /// ```
-pub fn encode(buf: &[u8]) -> Result<String, errors::Base32768Error> {
-    let resized_bytes = bits_to_bits::resize_bytes(buf, 8, POINT_LEN);
-    let mut output = Vec::<u16>::new();
-
-    for idx in 0..resized_bytes.len() {
-        let b = &resized_bytes[idx];
-        let mut bytes = b.bytes;
-        let mut bits = b.bits;
-        if bits != POINT_LEN {
-            if idx != resized_bytes.len() - 1 {
-                return Err(errors::Base32768Error::new("Found partial byte midway through stream".to_owned()))
+pub fn encode(buf: &[u8]) -> String {
+    let mut output = match calculate_encoded_length(buf.len()) {
+        Some(l) => {
+            let mut v = Vec::<u16>::with_capacity(l);
+            unsafe {
+                v.set_len(l);
             }
 
-            let pad_bits = (POINT_LEN - bits) % 8;
-            bytes = (bytes << pad_bits) + ((1 << pad_bits) - 1);
-            bits += pad_bits;
-        }
-
-        let repertoire = (POINT_LEN - bits) / 8;
-        let encode_table = LOOKUP_TABLES.lookup_encode.get(repertoire);
-        if let None = encode_table {
-            return Err(errors::Base32768Error::new(format!("Unrecognized `repertoire` {}", repertoire)));
-        }
-        let code_point = encode_table.unwrap().get(bytes as usize);
-        if let None = code_point {
-            return Err(errors::Base32768Error::new(format!("Can't encode {}", bytes)));
-        }
-
-        output.push(*code_point.unwrap());
+            v
+        },
+        None => panic!("Integer overflow calculating size ouf output buffer"),
     };
+    const LOW_15_BITS: u32 = 0x7FFF;
+    const LOW_15_BITS_U16: u16 = 0x7FFF;
+    
+    let rem = buf.len() % 2;
+    let start_of_rem = (buf.len() - rem) - 1;
+    
+    let mut output_index = 0;
+    let mut input_index = 0;
+    if start_of_rem > 3 {
+        let input_buf = &buf[0..2];
+        let input_num = BigEndian::read_u16(&input_buf);
+        (&mut output)[0] = LOOKUP_TABLES.lookup_encode[0][((input_num >> 1) & LOW_15_BITS_U16) as usize];
+
+        let mut input_buf = [0u8; 4];
+        input_buf[1..].copy_from_slice(&buf[1..4]);
+        let input_num = BigEndian::read_u32(&input_buf);
+        (&mut output)[1] = LOOKUP_TABLES.lookup_encode[0][((input_num >> 2) & LOW_15_BITS) as usize];
+
+        output_index = 2;
+        input_index = 4;
+        while input_index < start_of_rem {
+            let input_buf = &buf[(input_index - 2)..(input_index + 2)];
+            let input_num = BigEndian::read_u32(&input_buf);
+            (&mut output)[output_index] = LOOKUP_TABLES.lookup_encode[0][((input_num >> ((output_index % 15) + 1)) & LOW_15_BITS) as usize];
+
+            output_index += 1;
+            input_index += 2
+        }
+    }
 
     let string = String::from_utf16(&output);
-    if let Err(e) = string {
-        return Err(errors::Base32768Error::new(format!("Error encoding {}", e.description())));
+    if let Err(_) = string {
+        panic!("Somehow managed to generate an invalid UTF-16 String");
     }
     
-    Ok(string.unwrap())
+    string.unwrap()
 }
 
 /// Decodes a UTF String into a slice of binary data
